@@ -313,8 +313,7 @@ def main():
         optimizer,
         mode='min',
         factor=0.5,
-        patience=10,
-        verbose=True
+        patience=10
     )
 
     # Resume from checkpoint if provided
@@ -336,6 +335,7 @@ def main():
     print("=" * 70)
 
     best_val_loss = float('inf')
+    prev_lr = args.lr
 
     for epoch in range(start_epoch, args.epochs):
         epoch_start_time = time.time()
@@ -352,6 +352,10 @@ def main():
 
         # Update learning rate
         scheduler.step(val_loss)
+        current_lr = optimizer.param_groups[0]['lr']
+        if current_lr != prev_lr:
+            print(f"  Learning rate reduced: {prev_lr:.2e} -> {current_lr:.2e}")
+            prev_lr = current_lr
 
         # Log to tensorboard
         writer.add_scalar('Loss/train', train_loss, epoch)

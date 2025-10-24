@@ -1,0 +1,37 @@
+# LaTeX auxiliary files
+*.aux
+*.bbl
+*.blg
+*.log
+*.out
+*.toc
+*.lof
+*.lot
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.nav
+*.snm
+*.vrb
+
+# BibTeX
+*.bib.bak
+*.bib.sav
+
+# Build directory
+build/
+
+# Editor files
+*.swp
+*.swo
+*~
+.DS_Store
+
+# But keep the template files
+!spieman.cls
+!spiejour.bst
+
+# Keep figures
+!figures/*.pdf
+!figures/*.png
+!figures/*.jpg

@@ -1,0 +1,255 @@
+% SPIE Proceedings format
+\documentclass[]{spieman}
+
+\renewcommand{\baselinestretch}{1.0}
+
+\usepackage{amsmath,amsfonts,amssymb}
+\usepackage{graphicx}
+\usepackage{url}
+\usepackage{hyperref}
+
+\title{Deep Learning-Based Super-Resolution for Landsat-to-AVIRIS Hyperspectral Image Enhancement}
+
+\author[a]{Judy}
+\affil[a]{Department, Institution, Address}
+
+%\authorinfo{Further author information: (Send correspondence to J.C.)\\
+% J.C.: E-mail: email@institution.edu}
+
+% Keywords
+%\keywords{Hyperspectral imaging, Super-resolution, Deep learning, RCAN, Spectral unmixing, AVIRIS-NG, Landsat-8}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+We present a two-stage deep learning approach for enhancing Landsat-8 multispectral imagery to AVIRIS-NG-quality hyperspectral resolution. The method consists of (1) spectral super-resolution that expands 7 Landsat bands to 340 hyperspectral bands using learned spectral correlations and attention mechanisms, and (2) spatial super-resolution that increases spatial resolution from 30m to 4m using residual channel attention networks (RCAN). Training is performed on synthetically generated paired data derived from AVIRIS-NG radiance imagery. The approach achieves [results to be added] on validation data, demonstrating the feasibility of deep learning-based hyperspectral reconstruction from limited multispectral observations.
+\end{abstract}
+
+\keywords{Hyperspectral imaging, Super-resolution, Deep learning, RCAN, Spectral unmixing, AVIRIS-NG, Landsat-8}
+
+
+\section{INTRODUCTION}
+\label{sec:intro}
+
+Hyperspectral imaging provides detailed spectral information crucial for remote sensing applications including mineral identification, vegetation analysis, and environmental monitoring. However, hyperspectral sensors like AVIRIS-NG \cite{green2015aviris} are limited in spatial and temporal coverage due to aircraft-based deployment. Conversely, satellite multispectral sensors like Landsat-8 OLI \cite{roy2014landsat} provide global coverage but with reduced spectral resolution (7-11 bands vs. hundreds of hyperspectral bands).
+
+This work addresses the challenge of reconstructing high-resolution hyperspectral imagery from low-resolution multispectral observations using deep learning. Previous approaches have explored spectral unmixing \cite{dong2016hyperspectral}, sparse representations, and more recently, convolutional neural networks \cite{sidorov2019deep, xie2018multispectral}. We build upon residual channel attention networks (RCAN) \cite{zhang2018rcan} and spectral attention mechanisms \cite{shi2019spectral} to achieve both spectral and spatial super-resolution.
+
+\subsection{Contributions}
+
+Our key contributions are:
+\begin{itemize}
+\item A two-stage architecture separating spectral (7→340 bands) and spatial (30m→4m) super-resolution, enabling efficient training with limited data
+\item Novel use of spectral angle mapper (SAM) loss \cite{kruse1993spectral} combined with spectral gradient constraints for preserving spectral fidelity
+\item Synthetic training data generation from AVIRIS-NG imagery that accurately simulates Landsat-8 spectral response functions and spatial degradation
+\item Validation on real AVIRIS-NG scenes demonstrating practical applicability
+\end{itemize}
+
+\section{RELATED WORK}
+\label{sec:related}
+
+\subsection{Hyperspectral Super-Resolution}
+
+Traditional hyperspectral super-resolution methods rely on spectral unmixing \cite{dong2016hyperspectral} and sparse coding. Aiazzi et al. \cite{aiazzi2014hyperspectral} proposed Laplacian pyramid-based fusion of hyperspectral and multispectral data. More recently, deep learning approaches have shown superior performance. Sidorov and Hardeberg \cite{sidorov2019deep} introduced deep hyperspectral priors for denoising and super-resolution. Xie et al. \cite{xie2018multispectral} used 3D CNNs for multispectral-hyperspectral fusion. For comprehensive coverage, we refer to the recent survey by Dian et al. \cite{dian2022survey}.
+
+\subsection{Residual Learning for Image Super-Resolution}
+
+Residual learning has proven highly effective for image super-resolution. Zhang et al. \cite{zhang2018rcan} introduced residual channel attention networks (RCAN), achieving state-of-the-art results through residual-in-residual structure with channel attention mechanisms. Zhang et al. \cite{zhang2018rdn} proposed residual dense networks (RDN) with dense connections. Our spatial super-resolution stage builds directly on the RCAN architecture, adapting it for multi-band hyperspectral data.
+
+\subsection{Spectral Attention and 1D Convolutions}
+
+For spectral dimension processing, Shi et al. \cite{shi2019spectral} demonstrated effectiveness of 1D convolutions along the spectral axis. Jiang et al. \cite{jiang2020deep} combined spectral and spatial attention in a unified framework. Our Stage 1 network employs spectral residual blocks with 1D convolutions and spectral attention, motivated by these works.
+
+\subsection{Loss Functions for Hyperspectral Data}
+
+Spectral Angle Mapper (SAM) \cite{kruse1993spectral} is a standard metric in hyperspectral remote sensing that measures spectral similarity regardless of illumination differences. Recent work by Lanaras et al. \cite{lanaras2021hyperspectral} incorporated SAM and spectral gradient constraints into training objectives. We adopt SAM loss as our primary spectral fidelity metric, combined with L1 reconstruction loss.
+
+\subsection{Training with Synthetic Data}
+
+Limited availability of paired training data motivates synthetic data generation. Xie et al. \cite{xie2018multispectral} and Zhu et al. \cite{zhu2021hyperspectral} successfully trained networks on synthetically degraded hyperspectral imagery. We follow this paradigm, generating synthetic Landsat observations from AVIRIS-NG data through accurate spectral integration and spatial degradation.
+
+\section{METHODOLOGY}
+\label{sec:method}
+
+\subsection{Problem Formulation}
+
+Let $\mathbf{X}_L \in \mathbb{R}^{H \times W \times 7}$ represent a Landsat-8 multispectral image with 7 bands at 30m spatial resolution, and $\mathbf{Y}_A \in \mathbb{R}^{7.5H \times 7.5W \times 340}$ represent the corresponding AVIRIS-NG hyperspectral image with 340 bands at 4m resolution. Our goal is to learn a mapping $f: \mathbf{X}_L \rightarrow \mathbf{Y}_A$ that reconstructs high-resolution hyperspectral imagery from low-resolution multispectral observations.
+
+\subsection{Two-Stage Architecture}
+
+We decompose the problem into two stages:
+\begin{enumerate}
+\item \textbf{Stage 1 - Spectral Super-Resolution}: $f_{\text{spec}}: \mathbb{R}^{H \times W \times 7} \rightarrow \mathbb{R}^{H \times W \times 340}$
+\item \textbf{Stage 2 - Spatial Super-Resolution}: $f_{\text{spat}}: \mathbb{R}^{H \times W \times 340} \rightarrow \mathbb{R}^{7.5H \times 7.5W \times 340}$
+\end{enumerate}
+
+This decomposition enables efficient training and provides interpretability by separating spectral and spatial reconstruction.
+
+\subsection{Stage 1: Spectral Super-Resolution Network}
+
+\subsubsection{Architecture}
+
+The spectral SR network (SpectralSRNet) consists of:
+\begin{itemize}
+\item Initial spectral expansion via 2D convolutions (7→340 bands)
+\item $N_r=8$ spectral residual blocks operating on flattened spatial dimensions
+\item Spectral attention module for band weighting
+\item Skip connection for stable training
+\end{itemize}
+
+Each spectral residual block uses 1D convolutions along the spectral dimension after reshaping $(B, C, H, W) \rightarrow (B, C, HW)$. This enables learning spectral correlations while remaining computationally efficient.
+
+\subsubsection{Spectral Attention}
+
+The spectral attention module computes importance weights for each of the 340 output bands:
+\begin{equation}
+\mathbf{w} = \sigma(\mathbf{W}_2 \cdot \text{ReLU}(\mathbf{W}_1 \cdot \text{GAP}(\mathbf{F})))
+\end{equation}
+where GAP is global average pooling, $\mathbf{W}_1 \in \mathbb{R}^{C/r \times C}$ and $\mathbf{W}_2 \in \mathbb{R}^{C \times C/r}$ are learned weights with reduction ratio $r=4$, and $\sigma$ is the sigmoid function.
+
+\subsection{Stage 2: Spatial Super-Resolution Network}
+
+\subsubsection{RCAN-Based Architecture}
+
+The spatial SR network adapts RCAN \cite{zhang2018rcan} for hyperspectral data:
+\begin{itemize}
+\item Shallow feature extraction: Conv(340, 64, 3×3)
+\item $N_g=4$ residual groups, each containing $N_b=4$ residual channel attention blocks (RCAB)
+\item Sub-pixel convolution upsampling \cite{shi2016subpixel} with $3 \times 2$ PixelShuffle for 8× upsampling
+\item Bicubic interpolation adjustment for exact 7.5× scale
+\item Residual learning with bicubic baseline
+\end{itemize}
+
+\subsubsection{Residual Channel Attention Block}
+
+Each RCAB contains:
+\begin{equation}
+\mathbf{F}_{out} = \mathbf{F}_{in} + \mathbf{CA}(\text{Conv}_2(\text{ReLU}(\text{Conv}_1(\mathbf{F}_{in}))))
+\end{equation}
+where $\mathbf{CA}$ is the channel attention operation identical to spectral attention but applied to spatial feature maps.
+
+\subsection{Synthetic Training Data Generation}
+
+\subsubsection{Spectral Degradation}
+
+We simulate Landsat-8 observations from AVIRIS-NG radiance data using Gaussian-approximated spectral response functions (SRFs):
+\begin{equation}
+L_i = \int_{\lambda} R(\lambda) \cdot \text{SRF}_i(\lambda) d\lambda
+\end{equation}
+where $R(\lambda)$ is AVIRIS radiance, $\text{SRF}_i(\lambda)$ is the Landsat band $i$ response, and $L_i$ is the integrated Landsat radiance. We use band centers from Roy et al. \cite{roy2014landsat}: 443nm (Coastal), 482nm (Blue), 562nm (Green), 655nm (Red), 865nm (NIR), 1609nm (SWIR-1), 2201nm (SWIR-2).
+
+\subsubsection{Spatial Degradation}
+
+Spatial degradation simulates 30m Landsat resolution from 4m AVIRIS:
+\begin{enumerate}
+\item Apply Gaussian PSF with $\sigma=2.0$ pixels to simulate sensor blur
+\item Downsample by factor 7.5 using area averaging
+\item Bicubic upsample back to original spatial dimensions for pixel-wise correspondence
+\end{enumerate}
+
+\subsubsection{Data Validation}
+
+Patches with invalid pixels (data ignore value -9999) are rejected. We apply contamination checks to exclude patches affected by Gaussian blur spreading invalid values. Final dataset consists of 36 patches (256×256 @ 4m resolution) from 3 AVIRIS-NG scenes over Pasadena, CA.
+
+\subsection{Loss Functions}
+
+\subsubsection{Stage 1 Loss}
+
+For spectral super-resolution:
+\begin{equation}
+\mathcal{L}_{\text{spec}} = \lambda_1 \mathcal{L}_{\text{L1}} + \lambda_2 \mathcal{L}_{\text{SAM}} + \lambda_3 \mathcal{L}_{\text{SG}}
+\end{equation}
+
+where:
+\begin{itemize}
+\item $\mathcal{L}_{\text{L1}} = \|\mathbf{Y}_{\text{pred}} - \mathbf{Y}_{\text{true}}\|_1$ (reconstruction)
+\item $\mathcal{L}_{\text{SAM}} = \text{arccos}\left(\frac{\mathbf{y}_p \cdot \mathbf{y}_t}{\|\mathbf{y}_p\| \|\mathbf{y}_t\|}\right)$ (spectral fidelity)
+\item $\mathcal{L}_{\text{SG}} = \|\nabla_\lambda \mathbf{Y}_{\text{pred}} - \nabla_\lambda \mathbf{Y}_{\text{true}}\|_1$ (spectral smoothness)
+\end{itemize}
+
+We use weights $\lambda_1=1.0, \lambda_2=0.1, \lambda_3=0.1$.
+
+\subsubsection{Stage 2 Loss}
+
+For spatial super-resolution:
+\begin{equation}
+\mathcal{L}_{\text{spat}} = \lambda_1 \mathcal{L}_{\text{L1}} + \lambda_2 \mathcal{L}_{\text{SAM}}
+\end{equation}
+
+with weights $\lambda_1=1.0, \lambda_2=0.05$ (reduced SAM weight to emphasize spatial fidelity).
+
+\section{EXPERIMENTAL SETUP}
+\label{sec:experiments}
+
+\subsection{Dataset}
+
+\textbf{AVIRIS-NG Data}: We use radiance data (not reflectance) from AVIRIS-NG flights over Pasadena, CA (June 2019). After excluding water absorption bands, 340 bands remain spanning 380-2510nm.
+
+\textbf{Training Set}: 36 patches (256×256 @ 4m) from 3 scenes, split 80/20 train/validation.
+
+\textbf{Normalization}: Robust percentile-based normalization (1st-99th percentile) to [0,1] range.
+
+\subsection{Training Details}
+
+\textbf{Stage 1}:
+\begin{itemize}
+\item Model: SpectralSRNet (7M parameters)
+\item Optimizer: Adam ($\beta_1=0.9, \beta_2=0.999$)
+\item Learning rate: $10^{-4}$ with ReduceLROnPlateau (factor=0.5, patience=10)
+\item Batch size: 4 (CPU) / 8 (GPU)
+\item Epochs: 100
+\item Hardware: NVIDIA TITAN V / Lambda Labs A100
+\end{itemize}
+
+\textbf{Stage 2}:
+\begin{itemize}
+\item Model: LightweightSpatialSRNet (130K parameters)
+\item Same optimizer and learning rate schedule
+\item Training on Stage 1 outputs
+\end{itemize}
+
+\subsection{Evaluation Metrics}
+
+\begin{itemize}
+\item \textbf{PSNR}: Peak signal-to-noise ratio (dB)
+\item \textbf{SSIM}: Structural similarity index
+\item \textbf{SAM}: Spectral angle mapper (degrees)
+\item \textbf{RMSE}: Root mean squared error per band
+\item \textbf{Spectral curves}: Visual comparison of reconstructed vs. ground truth spectra
+\end{itemize}
+
+\section{RESULTS}
+\label{sec:results}
+
+[Results to be added after training completes]
+
+\subsection{Stage 1: Spectral Super-Resolution}
+
+\subsection{Stage 2: Spatial Super-Resolution}
+
+\subsection{Ablation Studies}
+
+\subsection{Qualitative Results}
+
+\section{DISCUSSION}
+\label{sec:discussion}
+
+\subsection{Limitations}
+
+\subsection{Future Work}
+
+\section{CONCLUSION}
+\label{sec:conclusion}
+
+[To be written]
+
+\acknowledgments
+
+This work was supported by [funding source]. AVIRIS-NG data courtesy of NASA/JPL.
+
+\bibliographystyle{spiejour}
+\bibliography{references}
+
+\end{document}
