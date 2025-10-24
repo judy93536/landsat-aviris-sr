@@ -24,6 +24,7 @@ import warnings
 from typing import Tuple, Optional, List
 
 from .landsat_srf import LandsatSRF, load_aviris_wavelengths
+from .envi_loader import load_aviris_ng
 
 
 class SyntheticDataGenerator:
@@ -188,7 +189,8 @@ class SyntheticDataGenerator:
         synthetic_landsat,
         patch_size_hr=256,
         stride=None,
-        min_valid_fraction=0.95
+        min_valid_fraction=0.95,
+        ignore_value=-9999
     ):
         """
         Extract paired patches from AVIRIS and synthetic Landsat.
@@ -204,7 +206,9 @@ class SyntheticDataGenerator:
         stride : int or None
             Stride for patch extraction. If None, use patch_size_hr (no overlap)
         min_valid_fraction : float
-            Minimum fraction of valid (non-NaN, non-zero) pixels required
+            Minimum fraction of valid pixels required (0.0-1.0)
+        ignore_value : float
+            Data ignore value from ENVI header (typically -9999)
 
         Returns:
         --------
@@ -220,11 +224,34 @@ class SyntheticDataGenerator:
         # Calculate corresponding patch size in low-res
         patch_size_lr = int(patch_size_hr / self.downsampling_factor)
 
+        # Create validity mask using a representative band (middle of NIR region, ~850nm)
+        # Use first band if cube is small, otherwise use band ~100 (around 850nm for AVIRIS)
+        mask_band_idx = min(100, aviris_cube.shape[2] // 2)
+        mask_band = aviris_cube[:, :, mask_band_idx]
+
+        # Valid pixels: not NaN, not ignore_value, and positive radiance
+        validity_mask = (
+            np.isfinite(mask_band) &
+            (mask_band != ignore_value) &
+            (mask_band > 0) &
+            (mask_band < 1e6)  # Reasonable upper bound for radiance
+        )
+
         patches = []
+        total_attempts = 0
 
         # Extract patches with sliding window
         for i in range(0, height_hr - patch_size_hr + 1, stride):
             for j in range(0, width_hr - patch_size_hr + 1, stride):
+                total_attempts += 1
+
+                # Check validity mask for this patch region
+                patch_mask = validity_mask[i:i+patch_size_hr, j:j+patch_size_hr]
+                valid_fraction = patch_mask.mean()
+
+                if valid_fraction < min_valid_fraction:
+                    continue  # Skip patches with insufficient valid pixels
+
                 # Extract high-res patch
                 patch_hr = aviris_cube[i:i+patch_size_hr, j:j+patch_size_hr, :]
 
@@ -239,19 +266,25 @@ class SyntheticDataGenerator:
                     :
                 ]
 
-                # Check validity
-                valid_hr = np.isfinite(patch_hr).all() and (patch_hr > 0).mean() > min_valid_fraction
-                valid_lr = np.isfinite(patch_lr).all() and (patch_lr > 0).mean() > min_valid_fraction
+                # Additional validity checks
+                # Check for ignore values across all bands
+                has_ignore_hr = np.any(patch_hr == ignore_value)
+                has_ignore_lr = np.any(patch_lr == ignore_value)
 
-                if valid_hr and valid_lr:
+                # Check for reasonable radiance values
+                valid_radiance_hr = np.all(np.isfinite(patch_hr)) and np.all(patch_hr >= 0) and np.all(patch_hr < 1e6)
+                valid_radiance_lr = np.all(np.isfinite(patch_lr)) and np.all(patch_lr >= 0) and np.all(patch_lr < 1e6)
+
+                if not has_ignore_hr and not has_ignore_lr and valid_radiance_hr and valid_radiance_lr:
                     patches.append({
                         "aviris": patch_hr.astype(np.float32),
                         "landsat": patch_lr.astype(np.float32),
                         "position_hr": (i, j),
-                        "position_lr": (i_lr, j_lr)
+                        "position_lr": (i_lr, j_lr),
+                        "valid_fraction": float(valid_fraction)
                     })
 
-        print(f"Extracted {len(patches)} valid patches")
+        print(f"Extracted {len(patches)} valid patches from {total_attempts} attempts ({100*len(patches)/max(total_attempts,1):.1f}% success rate)")
         return patches
 
     def process_aviris_file(
@@ -287,12 +320,16 @@ class SyntheticDataGenerator:
         print(f"\nProcessing AVIRIS file: {aviris_path.name}")
 
         # Load AVIRIS data
-        aviris_cube = self.load_aviris(aviris_path)
+        aviris_cube, aviris_wavelengths = self.load_aviris(aviris_path)
 
-        # Generate wavelengths if not provided
+        # Use provided wavelengths or loaded wavelengths
         if wavelengths is None:
-            _, _, n_bands = aviris_cube.shape
-            wavelengths = load_aviris_wavelengths(n_bands=n_bands)
+            if aviris_wavelengths is not None:
+                wavelengths = aviris_wavelengths
+            else:
+                # Fall back to default wavelengths
+                _, _, n_bands = aviris_cube.shape
+                wavelengths = load_aviris_wavelengths(n_bands=n_bands)
 
         # Generate synthetic Landsat
         synthetic_landsat = self.generate_synthetic_landsat(aviris_cube, wavelengths)
@@ -322,7 +359,7 @@ class SyntheticDataGenerator:
         """
         Load AVIRIS data from file.
 
-        Supports common formats: .h5, .hdf, .npy
+        Supports common formats: ENVI (AVIRIS-NG), .h5, .hdf, .npy
 
         Parameters:
         -----------
@@ -333,11 +370,23 @@ class SyntheticDataGenerator:
         --------
         cube : np.ndarray
             AVIRIS radiance cube (shape: [height, width, n_bands])
+        wavelengths : np.ndarray or None
+            Wavelength array if available
         """
         filepath = Path(filepath)
         ext = filepath.suffix.lower()
 
-        if ext in ['.h5', '.hdf', '.hdf5']:
+        wavelengths = None
+
+        # Check if it's an ENVI format file (AVIRIS-NG _img files)
+        if '_img' in filepath.name or ext == '':
+            # ENVI format (AVIRIS-NG)
+            cube, wavelengths, metadata = load_aviris_ng(
+                filepath,
+                exclude_water_bands=True
+            )
+
+        elif ext in ['.h5', '.hdf', '.hdf5']:
             with h5py.File(filepath, 'r') as f:
                 # Try common dataset names
                 for key in ['radiance', 'data', 'cube', 'aviris']:
@@ -361,7 +410,7 @@ class SyntheticDataGenerator:
             raise ValueError(f"Expected 3D cube, got shape {cube.shape}")
 
         print(f"Loaded AVIRIS cube: {cube.shape}")
-        return cube
+        return cube, wavelengths
 
     def save_patches(self, patches, output_file):
         """
