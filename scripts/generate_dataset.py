@@ -250,6 +250,11 @@ def main():
             # Save patches for this file
             output_file = output_dir / f"{aviris_file.stem}_patches.h5"
             generator.save_patches(patches, output_file)
+
+            # Create thumbnails
+            thumbnail_dir = output_dir / f"{aviris_file.stem}_thumbnails"
+            generator.create_thumbnails(patches, thumbnail_dir, wavelengths=wavelengths)
+
             patch_files.append(output_file)
             total_patches += len(patches)
 

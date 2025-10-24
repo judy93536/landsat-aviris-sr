@@ -77,7 +77,56 @@ def create_test_aviris_data(height=512, width=512, n_bands=224):
     return aviris_cube, wavelengths
 
 
-def visualize_results(aviris_cube, synthetic_landsat, wavelengths, output_dir=None):
+def scale_rgb_robust(rgb_stack, ignore_value=-9999, percentile_low=2, percentile_high=98):
+    """
+    Robustly scale RGB composite excluding invalid pixels.
+
+    Parameters:
+    -----------
+    rgb_stack : np.ndarray
+        RGB stack (height, width, 3)
+    ignore_value : float
+        Invalid pixel value to exclude
+    percentile_low : float
+        Lower percentile for clipping
+    percentile_high : float
+        Upper percentile for clipping
+
+    Returns:
+    --------
+    scaled : np.ndarray
+        Scaled RGB in [0, 1] range
+    """
+    # Create validity mask
+    valid_mask = (
+        (rgb_stack > 0) &
+        (rgb_stack < 1e6) &
+        (rgb_stack != ignore_value) &
+        np.isfinite(rgb_stack)
+    )
+
+    # Get valid data across all bands
+    valid_data = rgb_stack[valid_mask]
+
+    if len(valid_data) == 0:
+        # All invalid - return zeros
+        return np.zeros_like(rgb_stack)
+
+    # Calculate percentiles from valid data only
+    p_low = np.percentile(valid_data, percentile_low)
+    p_high = np.percentile(valid_data, percentile_high)
+
+    # Scale
+    scaled = (rgb_stack - p_low) / (p_high - p_low + 1e-8)
+    scaled = np.clip(scaled, 0, 1)
+
+    # Set invalid pixels to black
+    scaled[~valid_mask] = 0
+
+    return scaled
+
+
+def visualize_results(aviris_cube, synthetic_landsat, wavelengths, output_dir=None, patches=None):
     """
     Create visualization of results.
 
@@ -91,6 +140,8 @@ def visualize_results(aviris_cube, synthetic_landsat, wavelengths, output_dir=No
         Wavelength array
     output_dir : Path or None
         Directory to save plots
+    patches : list of dict or None
+        Extracted patches for visualization
     """
     print("\nCreating visualizations...")
 
@@ -106,20 +157,41 @@ def visualize_results(aviris_cube, synthetic_landsat, wavelengths, output_dir=No
         aviris_cube[:, :, g_idx],
         aviris_cube[:, :, b_idx]
     ], axis=2)
-    aviris_rgb = (aviris_rgb - aviris_rgb.min()) / (aviris_rgb.max() - aviris_rgb.min())
+
+    # Robust scaling excluding invalid pixels
+    aviris_rgb = scale_rgb_robust(aviris_rgb)
 
     axes[0, 0].imshow(aviris_rgb)
     axes[0, 0].set_title("AVIRIS RGB (4m)")
     axes[0, 0].axis('off')
 
-    # Synthetic Landsat RGB (bands 3, 2, 1 for LC08)
-    if synthetic_landsat.shape[2] >= 3:
+    # Synthetic Landsat RGB - use a sample patch if available
+    if patches is not None and len(patches) > 0:
+        # Show first patch instead of full contaminated image
+        patch_lr = patches[0]['landsat']
+
+        landsat_rgb = np.stack([
+            patch_lr[:, :, 3],  # Red
+            patch_lr[:, :, 2],  # Green
+            patch_lr[:, :, 1]   # Blue
+        ], axis=2)
+
+        # Robust scaling
+        landsat_rgb = scale_rgb_robust(landsat_rgb)
+
+        axes[0, 1].imshow(landsat_rgb)
+        axes[0, 1].set_title(f"Synthetic Landsat RGB - Patch 0 (256x256)")
+        axes[0, 1].axis('off')
+    elif synthetic_landsat.shape[2] >= 3:
+        # Fallback to full image with robust scaling
         landsat_rgb = np.stack([
             synthetic_landsat[:, :, 3],  # Red
             synthetic_landsat[:, :, 2],  # Green
             synthetic_landsat[:, :, 1]   # Blue
         ], axis=2)
-        landsat_rgb = (landsat_rgb - landsat_rgb.min()) / (landsat_rgb.max() - landsat_rgb.min())
+
+        # Robust scaling excluding invalid pixels
+        landsat_rgb = scale_rgb_robust(landsat_rgb)
 
         axes[0, 1].imshow(landsat_rgb)
         axes[0, 1].set_title("Synthetic Landsat RGB (30m)")
@@ -239,8 +311,10 @@ def main():
     if args.aviris_file is not None:
         print(f"\nLoading AVIRIS data from: {args.aviris_file}")
         generator = SyntheticDataGenerator()
-        aviris_cube = generator.load_aviris(args.aviris_file)
-        wavelengths = load_aviris_wavelengths(n_bands=aviris_cube.shape[2])
+        aviris_cube, wavelengths = generator.load_aviris(args.aviris_file)
+        # Use loaded wavelengths if available, otherwise generate default
+        if wavelengths is None:
+            wavelengths = load_aviris_wavelengths(n_bands=aviris_cube.shape[2])
     else:
         print("\nNo AVIRIS file provided, creating synthetic test data...")
         aviris_cube, wavelengths = create_test_aviris_data()
@@ -273,6 +347,11 @@ def main():
     if len(patches) > 0:
         patch_file = output_dir / "test_patches.h5"
         generator.save_patches(patches, patch_file)
+
+        # Create thumbnails
+        print("\nCreating thumbnails...")
+        thumbnail_dir = output_dir / "test_patches_thumbnails"
+        generator.create_thumbnails(patches, thumbnail_dir, wavelengths=wavelengths)
 
         # Test loading
         print("\nTesting patch loading...")
@@ -307,7 +386,8 @@ def main():
         aviris_cube,
         synthetic_landsat,
         wavelengths,
-        output_dir=output_dir
+        output_dir=output_dir,
+        patches=patches
     )
 
     # Summary

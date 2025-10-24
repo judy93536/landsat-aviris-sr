@@ -43,6 +43,11 @@ data/processed/
 outputs/synthetic/
 outputs/real/
 outputs/checkpoints/
+outputs/dataset_small/
+outputs/test/
+outputs/test_thumbnails/
+outputs/stage1_training/
+outputs/stage2_training/
 
 # IDEs
 .vscode/
