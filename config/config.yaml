@@ -1,0 +1,60 @@
+# Landsat-AVIRIS Super-Resolution Configuration
+
+# Data paths
+data:
+  aviris_raw: "/raid/MSI_MSI_AIML/download/aviris"  # Raw AVIRIS imagery
+  landsat_raw: "/raid/MSI_MSI_AIML/download/landsat"  # Raw Landsat imagery
+  synthetic_output: "outputs/synthetic"  # Generated synthetic pairs
+  real_pairs: "outputs/real"  # Real paired data
+
+# Landsat sensor configuration
+landsat:
+  sensor: "LC08"  # Landsat-8 OLI
+  spatial_resolution: 30  # meters
+  bands: [1, 2, 3, 4, 5, 6, 7]  # Coastal, Blue, Green, Red, NIR, SWIR1, SWIR2
+
+# AVIRIS sensor configuration
+aviris:
+  spatial_resolution: 4  # meters (AVIRIS-3)
+  spectral_bands: 224
+  spectral_range: [380, 2510]  # nm
+  fwhm: 10  # nm, full-width half-maximum
+
+# Synthetic data generation
+synthetic:
+  patch_size: 256  # pixels (at AVIRIS resolution)
+  downsampling_factor: 7.5  # 30m / 4m
+  psf_sigma: 2.0  # Point spread function for spatial degradation
+
+  # Noise parameters (per-band SNR)
+  noise:
+    enable: true
+    snr_range: [30, 100]  # Signal-to-noise ratio range
+
+  # Atmospheric augmentation
+  atmosphere:
+    enable: false  # Enable in Phase 3
+    water_vapor_range: [0.5, 4.0]  # cm
+    visibility_range: [5, 40]  # km
+
+# Training configuration
+training:
+  batch_size: 8
+  patch_size: 256
+  num_epochs: 100
+  learning_rate: 0.0001
+  checkpoint_dir: "outputs/checkpoints"
+
+# Model configuration
+model:
+  architecture: "unet3d"
+  in_channels: 7  # Landsat bands
+  out_channels: 224  # AVIRIS bands
+  base_filters: 32
+  depth: 4
+
+# Loss function
+loss:
+  type: "rmse"  # Root mean squared error
+  spectral_smoothness: false  # Add spectral smoothness penalty
+  smoothness_weight: 0.01
