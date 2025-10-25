@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from models.stage1_spectral.spectral_sr_net import SpectralSRNet
 from models.stage2_spatial.spatial_sr_net import SpatialSRNet
-from utils.dataloader import create_dataloaders
+from utils.dataloader import create_dataloaders, find_all_patch_files, split_train_val
 from utils.losses import SpatialLoss
 
 
@@ -59,7 +59,7 @@ def load_stage1_model(checkpoint_path, device):
     return model
 
 
-def train_epoch(stage1_model, stage2_model, train_loader, criterion, optimizer, device, epoch):
+def train_epoch(stage1_model, stage2_model, train_loader, criterion, optimizer, device, epoch, scale_factor=7.5):
     """Train for one epoch."""
     stage2_model.train()
     stage1_model.eval()  # Keep Stage 1 frozen
@@ -73,10 +73,30 @@ def train_epoch(stage1_model, stage2_model, train_loader, criterion, optimizer, 
 
         # Stage 1: Generate 340 bands (frozen, no gradients)
         with torch.no_grad():
-            stage1_out = stage1_model(landsat)
+            stage1_out = stage1_model(landsat)  # (B, 340, 256, 256)
 
-        # Stage 2: Spatial refinement (trainable)
-        stage2_out = stage2_model(stage1_out)
+            # Downsample to true Landsat resolution
+            # 256 / 7.5 ≈ 34 pixels (30m resolution)
+            low_res_size = int(stage1_out.shape[-1] / scale_factor)
+            stage1_downsampled = torch.nn.functional.interpolate(
+                stage1_out,
+                size=(low_res_size, low_res_size),
+                mode='bicubic',
+                align_corners=False
+            )  # (B, 340, 34, 34)
+
+        # Stage 2: Spatial super-resolution (trainable)
+        # Upsamples 34×34 → 272×272 (34×8), then resize to 256×256
+        stage2_out = stage2_model(stage1_downsampled)
+
+        # Resize to match target size if needed
+        if stage2_out.shape[-1] != aviris.shape[-1]:
+            stage2_out = torch.nn.functional.interpolate(
+                stage2_out,
+                size=(aviris.shape[-2], aviris.shape[-1]),
+                mode='bicubic',
+                align_corners=False
+            )
 
         # Compute loss
         loss = criterion(stage2_out, aviris)
@@ -96,7 +116,7 @@ def train_epoch(stage1_model, stage2_model, train_loader, criterion, optimizer, 
     return total_loss / num_batches
 
 
-def validate(stage1_model, stage2_model, val_loader, criterion, device):
+def validate(stage1_model, stage2_model, val_loader, criterion, device, scale_factor=7.5):
     """Validate the model."""
     stage1_model.eval()
     stage2_model.eval()
@@ -109,9 +129,29 @@ def validate(stage1_model, stage2_model, val_loader, criterion, device):
             landsat = landsat.to(device)
             aviris = aviris.to(device)
 
-            # Stage 1 + Stage 2 pipeline
+            # Stage 1: Generate 340 bands
             stage1_out = stage1_model(landsat)
-            stage2_out = stage2_model(stage1_out)
+
+            # Downsample to true Landsat resolution
+            low_res_size = int(stage1_out.shape[-1] / scale_factor)
+            stage1_downsampled = torch.nn.functional.interpolate(
+                stage1_out,
+                size=(low_res_size, low_res_size),
+                mode='bicubic',
+                align_corners=False
+            )
+
+            # Stage 2: Spatial super-resolution
+            stage2_out = stage2_model(stage1_downsampled)
+
+            # Resize to match target size if needed
+            if stage2_out.shape[-1] != aviris.shape[-1]:
+                stage2_out = torch.nn.functional.interpolate(
+                    stage2_out,
+                    size=(aviris.shape[-2], aviris.shape[-1]),
+                    mode='bicubic',
+                    align_corners=False
+                )
 
             loss = criterion(stage2_out, aviris)
 
@@ -182,10 +222,23 @@ def main():
     print("Stage 2 Training: Spatial Super-Resolution")
     print("=" * 70)
 
-    train_loader, val_loader = create_dataloaders(
-        args.data_dir,
+    # Find all patch files
+    all_files = find_all_patch_files(args.data_dir)
+    print(f"\nFound {len(all_files)} patch files:")
+    for f in all_files:
+        print(f"  - {os.path.basename(f)}")
+
+    # Split into train/val
+    train_files, val_files = split_train_val(all_files, val_fraction=args.val_fraction)
+    print(f"\nTrain files: {len(train_files)}")
+    print(f"Val files: {len(val_files)}")
+
+    # Create dataloaders
+    print("\nCreating dataloaders...")
+    train_loader, val_loader, train_dataset = create_dataloaders(
+        train_files,
+        val_files,
         batch_size=args.batch_size,
-        val_fraction=args.val_fraction,
         num_workers=args.num_workers
     )
 
@@ -195,14 +248,15 @@ def main():
     # Create Stage 2 model
     print(f"\nCreating Stage 2 model: {args.model}")
 
-    # Note: For now, we'll train at the same resolution (no actual upsampling)
-    # This is because the data is already aligned. Stage 2 learns to refine spatial details.
+    # Stage 2 upsamples from ~34×34 (30m Landsat resolution) to 256×256 (4m AVIRIS resolution)
+    # Scale factor: 256/34 ≈ 7.5×
+    # We'll use 8× upsampling (closest supported power of 2)
     stage2_model = SpatialSRNet(
         num_bands=340,
         num_features=args.num_features,
         num_groups=args.num_groups,
         num_blocks_per_group=args.num_blocks,
-        scale_factor=1.0,  # No upsampling, just spatial refinement
+        scale_factor=8,  # 8× upsampling (will be cropped/interpolated to exact 7.5×)
         reduction=16
     )
 
@@ -215,7 +269,7 @@ def main():
     criterion = SpatialLoss()
     optimizer = optim.Adam(stage2_model.parameters(), lr=args.lr)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=10, verbose=True
+        optimizer, mode='min', factor=0.5, patience=10
     )
 
     # TensorBoard
@@ -242,11 +296,11 @@ def main():
 
         # Train
         train_loss = train_epoch(
-            stage1_model, stage2_model, train_loader, criterion, optimizer, device, epoch
+            stage1_model, stage2_model, train_loader, criterion, optimizer, device, epoch, scale_factor=7.5
         )
 
         # Validate
-        val_loss = validate(stage1_model, stage2_model, val_loader, criterion, device)
+        val_loss = validate(stage1_model, stage2_model, val_loader, criterion, device, scale_factor=7.5)
 
         # Update learning rate
         scheduler.step(val_loss)
