@@ -35,7 +35,7 @@ We present a two-stage deep learning approach for enhancing Landsat-8 multispect
 
 Hyperspectral imaging provides detailed spectral information crucial for remote sensing applications including mineral identification, vegetation analysis, and environmental monitoring. However, hyperspectral sensors like AVIRIS-NG \cite{green2015aviris} are limited in spatial and temporal coverage due to aircraft-based deployment. Conversely, satellite multispectral sensors like Landsat-8 OLI \cite{roy2014landsat} provide global coverage but with reduced spectral resolution (7-11 bands vs. hundreds of hyperspectral bands).
 
-This work addresses the challenge of reconstructing high-resolution hyperspectral imagery from low-resolution multispectral observations using deep learning. Previous approaches have explored spectral unmixing \cite{dong2016hyperspectral}, sparse representations, and more recently, convolutional neural networks \cite{sidorov2019deep, xie2018multispectral}. We build upon residual channel attention networks (RCAN) \cite{zhang2018rcan} and spectral attention mechanisms \cite{shi2019spectral} to achieve both spectral and spatial super-resolution.
+This work addresses the challenge of reconstructing high-resolution hyperspectral imagery from low-resolution multispectral observations using deep learning. Previous approaches have explored spectral unmixing \cite{dong2016hyperspectral}, sparse representations, and more recently, convolutional neural networks \cite{sidorov2019deep, xie2018multispectral}. We build upon residual channel attention networks (RCAN) \cite{zhang2018rcan} and 3D convolutional approaches \cite{mei2019hyperspectral, mei2020spatial} to achieve both spectral and spatial super-resolution.
 
 \subsection{Contributions}
 
@@ -58,9 +58,9 @@ Traditional hyperspectral super-resolution methods rely on spectral unmixing \ci
 
 Residual learning has proven highly effective for image super-resolution. Zhang et al. \cite{zhang2018rcan} introduced residual channel attention networks (RCAN), achieving state-of-the-art results through residual-in-residual structure with channel attention mechanisms. Zhang et al. \cite{zhang2018rdn} proposed residual dense networks (RDN) with dense connections. Our spatial super-resolution stage builds directly on the RCAN architecture, adapting it for multi-band hyperspectral data.
 
-\subsection{Spectral Attention and 1D Convolutions}
+\subsection{3D Convolutions and Spectral-Spatial Processing}
 
-For spectral dimension processing, Shi et al. \cite{shi2019spectral} demonstrated effectiveness of 1D convolutions along the spectral axis. Jiang et al. \cite{jiang2020deep} combined spectral and spatial attention in a unified framework. Our Stage 1 network employs spectral residual blocks with 1D convolutions and spectral attention, motivated by these works.
+For joint spectral-spatial processing, Mei et al. \cite{mei2019hyperspectral} demonstrated effectiveness of 3D convolutional neural networks for hyperspectral image super-resolution. Later work by Mei et al. \cite{mei2020spatial} combined spatial and spectral joint super-resolution using CNNs. Jiang et al. \cite{jiang2020deep} integrated spectral and spatial attention in a unified framework. Our approach employs separate stages for spectral and spatial processing, enabling efficient training with limited data.
 
 \subsection{Loss Functions for Hyperspectral Data}
 
