@@ -67,9 +67,9 @@ def train_epoch(stage1_model, stage2_model, train_loader, criterion, optimizer, 
     total_loss = 0.0
     num_batches = 0
 
-    for batch_idx, (landsat, aviris) in enumerate(train_loader):
-        landsat = landsat.to(device)
-        aviris = aviris.to(device)
+    for batch_idx, batch in enumerate(train_loader):
+        landsat = batch['landsat'].to(device)
+        aviris = batch['aviris'].to(device)
 
         # Stage 1: Generate 340 bands (frozen, no gradients)
         with torch.no_grad():
@@ -98,8 +98,8 @@ def train_epoch(stage1_model, stage2_model, train_loader, criterion, optimizer, 
                 align_corners=False
             )
 
-        # Compute loss
-        loss = criterion(stage2_out, aviris)
+        # Compute loss (SpatialLoss returns tuple: (total_loss, loss_dict))
+        loss, loss_dict = criterion(stage2_out, aviris)
 
         # Backward pass
         optimizer.zero_grad()
@@ -125,9 +125,9 @@ def validate(stage1_model, stage2_model, val_loader, criterion, device, scale_fa
     num_batches = 0
 
     with torch.no_grad():
-        for landsat, aviris in val_loader:
-            landsat = landsat.to(device)
-            aviris = aviris.to(device)
+        for batch in val_loader:
+            landsat = batch['landsat'].to(device)
+            aviris = batch['aviris'].to(device)
 
             # Stage 1: Generate 340 bands
             stage1_out = stage1_model(landsat)
@@ -153,7 +153,8 @@ def validate(stage1_model, stage2_model, val_loader, criterion, device, scale_fa
                     align_corners=False
                 )
 
-            loss = criterion(stage2_out, aviris)
+            # SpatialLoss returns tuple: (total_loss, loss_dict)
+            loss, loss_dict = criterion(stage2_out, aviris)
 
             total_loss += loss.item()
             num_batches += 1
