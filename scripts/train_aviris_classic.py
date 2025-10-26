@@ -1,12 +1,10 @@
 """
-Train Stage 2: Spatial Refinement Network
+Train spectral super-resolution model on AVIRIS Classic dataset.
 
-Takes Stage 1 output and refines spatial details to match ground truth.
+Input:  7 Landsat bands @ 256×256 (simulated, upsampled from ~126×126)
+Output: 198 AVIRIS Classic bands @ 256×256
 
-Pipeline:
-1. Load Stage 1 model (frozen)
-2. Generate Stage 1 predictions for all training patches
-3. Train Stage 2 to refine these predictions
+This is Stage 1 - Spectral SR only (spatial resolution already matched).
 """
 
 import torch
@@ -24,67 +22,80 @@ import sys
 
 sys.path.append(str(Path(__file__).parent.parent))
 from models.stage1_spectral.spectral_sr_net import SpectralSRNet
-from models.stage2_spatial.spatial_refinement_net import SpatialRefinementNet, LightweightSpatialRefinementNet
 from utils.losses import CombinedLoss
 
 
-class Stage2Dataset(Dataset):
+class AVIRISClassicDataset(Dataset):
     """
-    Dataset for Stage 2 training.
+    Dataset loader for AVIRIS Classic HDF5 files.
 
-    Generates Stage 1 predictions on-the-fly and uses them as input.
+    Returns paired patches:
+    - landsat: (7, 256, 256) - simulated Landsat
+    - aviris: (198, 256, 256) - AVIRIS Classic ground truth
     """
 
-    def __init__(self, h5_file, stage1_model, device='cuda', normalize=True):
+    def __init__(self, h5_file, normalize=True):
+        """
+        Initialize dataset.
+
+        Parameters:
+        -----------
+        h5_file : str
+            Path to HDF5 file
+        normalize : bool
+            Apply normalization (robust percentile-based)
+        """
         self.h5_file = h5_file
-        self.stage1_model = stage1_model
-        self.stage1_model.eval()
-        self.device = device
         self.normalize = normalize
 
         # Open file to get metadata
         with h5py.File(h5_file, 'r') as f:
             self.n_patches = f.attrs['n_patches']
-
-            # Load all data into memory for speed
-            print("Loading dataset into memory...")
-            self.landsat_data = f['landsat'][:]  # (N, H, W, C)
-            self.aviris_data = f['aviris'][:]
+            self.aviris_bands = f.attrs['aviris_bands']
+            self.landsat_bands = f.attrs['landsat_bands']
 
             # Compute normalization statistics
             if normalize:
-                self.aviris_p2 = np.percentile(self.aviris_data, 2)
-                self.aviris_p98 = np.percentile(self.aviris_data, 98)
-                self.landsat_p2 = np.percentile(self.landsat_data, 2)
-                self.landsat_p98 = np.percentile(self.landsat_data, 98)
+                print("Computing normalization statistics...")
+                aviris_data = f['aviris'][:]
+                landsat_data = f['landsat'][:]
 
-        print(f"Loaded {self.n_patches} patches")
+                # Use 2nd and 98th percentile for robust normalization
+                self.aviris_p2 = np.percentile(aviris_data, 2)
+                self.aviris_p98 = np.percentile(aviris_data, 98)
+                self.landsat_p2 = np.percentile(landsat_data, 2)
+                self.landsat_p98 = np.percentile(landsat_data, 98)
+
+                print(f"  AVIRIS:  [{self.aviris_p2:.4f}, {self.aviris_p98:.4f}]")
+                print(f"  Landsat: [{self.landsat_p2:.4f}, {self.landsat_p98:.4f}]")
+
+        print(f"Loaded dataset: {self.n_patches} patches")
+        print(f"  Landsat: {self.landsat_bands} bands")
+        print(f"  AVIRIS:  {self.aviris_bands} bands")
 
     def __len__(self):
         return self.n_patches
 
     def __getitem__(self, idx):
-        # Get data
-        landsat = self.landsat_data[idx]  # (256, 256, 7)
-        aviris_gt = self.aviris_data[idx]  # (256, 256, 198)
+        with h5py.File(self.h5_file, 'r') as f:
+            # Load patches (H, W, C)
+            landsat = f['landsat'][idx]  # (256, 256, 7)
+            aviris = f['aviris'][idx]    # (256, 256, 198)
 
         # Normalize
         if self.normalize:
             landsat = (landsat - self.landsat_p2) / (self.landsat_p98 - self.landsat_p2 + 1e-8)
-            aviris_gt = (aviris_gt - self.aviris_p2) / (self.aviris_p98 - self.aviris_p2 + 1e-8)
+            aviris = (aviris - self.aviris_p2) / (self.aviris_p98 - self.aviris_p2 + 1e-8)
+
+            # Clip to [0, 1]
             landsat = np.clip(landsat, 0, 1)
-            aviris_gt = np.clip(aviris_gt, 0, 1)
+            aviris = np.clip(aviris, 0, 1)
 
-        # Convert to torch (C, H, W)
-        landsat_torch = torch.from_numpy(landsat.transpose(2, 0, 1)).float()
-        aviris_gt_torch = torch.from_numpy(aviris_gt.transpose(2, 0, 1)).float()
+        # Convert to torch tensors (C, H, W)
+        landsat = torch.from_numpy(landsat.transpose(2, 0, 1)).float()
+        aviris = torch.from_numpy(aviris.transpose(2, 0, 1)).float()
 
-        # Generate Stage 1 prediction
-        with torch.no_grad():
-            stage1_pred = self.stage1_model(landsat_torch.unsqueeze(0).to(self.device))
-            stage1_pred = stage1_pred.squeeze(0).cpu()
-
-        return stage1_pred, aviris_gt_torch
+        return landsat, aviris
 
 
 def train_epoch(model, dataloader, criterion, optimizer, device):
@@ -93,13 +104,13 @@ def train_epoch(model, dataloader, criterion, optimizer, device):
     total_loss = 0
 
     with tqdm(dataloader, desc="Training") as pbar:
-        for stage1_pred, aviris_gt in pbar:
-            stage1_pred = stage1_pred.to(device)
-            aviris_gt = aviris_gt.to(device)
+        for landsat, aviris in pbar:
+            landsat = landsat.to(device)
+            aviris = aviris.to(device)
 
             # Forward pass
-            output = model(stage1_pred)
-            loss, loss_dict = criterion(output, aviris_gt)
+            output = model(landsat)
+            loss, loss_dict = criterion(output, aviris)
 
             # Backward pass
             optimizer.zero_grad()
@@ -118,12 +129,12 @@ def validate(model, dataloader, criterion, device):
     total_loss = 0
 
     with torch.no_grad():
-        for stage1_pred, aviris_gt in dataloader:
-            stage1_pred = stage1_pred.to(device)
-            aviris_gt = aviris_gt.to(device)
+        for landsat, aviris in dataloader:
+            landsat = landsat.to(device)
+            aviris = aviris.to(device)
 
-            output = model(stage1_pred)
-            loss, _ = criterion(output, aviris_gt)
+            output = model(landsat)
+            loss, _ = criterion(output, aviris)
 
             total_loss += loss.item()
 
@@ -131,14 +142,12 @@ def validate(model, dataloader, criterion, device):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Train Stage 2 spatial refinement model')
+    parser = argparse.ArgumentParser(description='Train AVIRIS Classic spectral SR model')
     parser.add_argument('--data', type=str, required=True,
                        help='Path to HDF5 dataset')
-    parser.add_argument('--stage1-checkpoint', type=str, required=True,
-                       help='Path to Stage 1 model checkpoint')
-    parser.add_argument('--output-dir', type=str, default='outputs/stage2_training',
+    parser.add_argument('--output-dir', type=str, default='outputs/aviris_classic_training',
                        help='Output directory for checkpoints')
-    parser.add_argument('--epochs', type=int, default=50,
+    parser.add_argument('--epochs', type=int, default=100,
                        help='Number of epochs')
     parser.add_argument('--batch-size', type=int, default=4,
                        help='Batch size')
@@ -146,17 +155,15 @@ def main():
                        help='Learning rate')
     parser.add_argument('--val-split', type=float, default=0.2,
                        help='Validation split fraction')
-    parser.add_argument('--lightweight', action='store_true',
-                       help='Use lightweight model')
-    parser.add_argument('--num-workers', type=int, default=0,
-                       help='Number of data loading workers (0 recommended)')
+    parser.add_argument('--num-workers', type=int, default=2,
+                       help='Number of data loading workers')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu',
                        help='Device (cuda/cpu)')
 
     args = parser.parse_args()
 
     print("="*70)
-    print("Stage 2: Spatial Refinement Training")
+    print("AVIRIS Classic Spectral SR Training")
     print("="*70)
     print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"\nConfiguration:")
@@ -178,25 +185,11 @@ def main():
     print(f"\nDevice: {device}")
     if device.type == 'cuda':
         print(f"  GPU: {torch.cuda.get_device_name(0)}")
-
-    # Load Stage 1 model
-    print(f"\nLoading Stage 1 model from {args.stage1_checkpoint}")
-    stage1_model = SpectralSRNet(
-        in_bands=7,
-        out_bands=198,
-        hidden_dim=128,
-        num_res_blocks=8,
-        use_attention=True
-    ).to(device)
-
-    checkpoint = torch.load(args.stage1_checkpoint, map_location=device)
-    stage1_model.load_state_dict(checkpoint['model_state_dict'])
-    stage1_model.eval()
-    print("  ✓ Stage 1 model loaded")
+        print(f"  Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
 
     # Load dataset
-    print(f"\nPreparing Stage 2 dataset...")
-    full_dataset = Stage2Dataset(args.data, stage1_model, device=device, normalize=True)
+    print(f"\nLoading dataset from {args.data}...")
+    full_dataset = AVIRISClassicDataset(args.data, normalize=True)
 
     # Split train/val
     n_val = int(len(full_dataset) * args.val_split)
@@ -228,32 +221,25 @@ def main():
         pin_memory=(device.type == 'cuda')
     )
 
-    # Create Stage 2 model
-    print(f"\nCreating Stage 2 model...")
-    if args.lightweight:
-        model = LightweightSpatialRefinementNet(
-            num_bands=198,
-            num_features=32,
-            num_blocks=4
-        ).to(device)
-        print("  Using lightweight model")
-    else:
-        model = SpatialRefinementNet(
-            num_bands=198,
-            num_features=64,
-            num_rcab=8,
-            reduction=16
-        ).to(device)
-        print("  Using full model")
+    # Create model
+    print(f"\nCreating model...")
+    model = SpectralSRNet(
+        in_bands=7,
+        out_bands=198,
+        hidden_dim=128,
+        num_res_blocks=8,
+        use_attention=True
+    ).to(device)
 
+    # Count parameters
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"  Parameters: {n_params:,}")
 
     # Loss and optimizer
     criterion = CombinedLoss(
         l1_weight=1.0,
-        sam_weight=0.05,  # Lower weight for Stage 2
-        spectral_grad_weight=0.05
+        sam_weight=0.1,
+        spectral_grad_weight=0.1
     )
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
