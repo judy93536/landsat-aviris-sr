@@ -33,7 +33,11 @@ class SimpleDataset(Dataset):
         self.normalize = normalize
 
         with h5py.File(h5_file, 'r') as f:
-            self.n_patches = f.attrs['n_patches']
+            # Handle both 'n_patches' (AVIRIS Classic) and 'num_patches' (AVIRIS-NG)
+            if 'num_patches' in f.attrs:
+                self.n_patches = f.attrs['num_patches']
+            else:
+                self.n_patches = f.attrs['n_patches']
 
             # Load into memory
             print("Loading dataset...")
@@ -177,17 +181,26 @@ def main():
         num_workers=args.num_workers, pin_memory=(device.type == 'cuda')
     )
 
+    # Detect number of channels from dataset
+    sample_landsat, sample_aviris = full_dataset[0]
+    in_channels = sample_landsat.shape[0]
+    out_channels = sample_aviris.shape[0]
+
+    print(f"\nDataset channels:")
+    print(f"  Input (Landsat): {in_channels}")
+    print(f"  Output (AVIRIS): {out_channels}")
+
     # Create model
     print(f"\nCreating 3D U-Net...")
     if args.lightweight:
         model = LightweightUNet3D(
-            in_channels=7, out_channels=198,
+            in_channels=in_channels, out_channels=out_channels,
             base_features=args.base_features
         ).to(device)
         print("  Using lightweight model")
     else:
         model = UNet3D(
-            in_channels=7, out_channels=198,
+            in_channels=in_channels, out_channels=out_channels,
             base_features=args.base_features
         ).to(device)
         print("  Using full model")
