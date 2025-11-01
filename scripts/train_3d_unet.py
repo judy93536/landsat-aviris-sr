@@ -128,6 +128,8 @@ def main():
     parser.add_argument('--base-features', type=int, default=16, help='Base feature channels')
     parser.add_argument('--num-workers', type=int, default=0, help='Data loading workers')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
+    parser.add_argument('--sam-weight', type=float, default=0.1, help='SAM loss weight (default: 0.1)')
+    parser.add_argument('--spectral-grad-weight', type=float, default=0.1, help='Spectral gradient loss weight (default: 0.1)')
 
     args = parser.parse_args()
 
@@ -211,9 +213,14 @@ def main():
     # Loss and optimizer
     criterion = CombinedLoss(
         l1_weight=1.0,
-        sam_weight=0.1,
-        spectral_grad_weight=0.1
+        sam_weight=args.sam_weight,
+        spectral_grad_weight=args.spectral_grad_weight
     )
+
+    print(f"\nLoss weights:")
+    print(f"  L1: 1.0")
+    print(f"  SAM: {args.sam_weight}")
+    print(f"  Spectral gradient: {args.spectral_grad_weight}")
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
